@@ -104,23 +104,29 @@ range_t parse_range(const char *rstr, int base) {
   return rg;
 }
 
-/* FIXME: accept ofile name write there */
-void extract_from_range(const char *filename, const char *range, int base) {
-  range_t rg = parse_range(range, base);
-  FILE *fp = fopen(filename, "r");
+inline void check_fp(FILE *fp, const char *msg) {
   if (fp == NULL) {
-    die("could not open file\n");
+    die(msg);
   }
+}
+
+void extract_from_range(const char *ifile, const char *ofile, const char *range, int base) {
+  range_t rg = parse_range(range, base);
+  FILE *fp = fopen(ifile, "r");
+  check_fp(fp, "could not open file\n");
+  FILE *ofp = fopen(ofile, "w");
+  check_fp(ofp, "could not open file\n");
   /* byte index */
   int bi = 0;
   int c;
   while ((c = fgetc(fp)) != EOF) {
     if (bi >= rg.start && bi < rg.stop) {
-      fputc(c, stdout);
+      fputc(c, ofp);
     }
     bi++;
   }
   fclose(fp);
+  fclose(ofp);
 }
 
 /* returns total bytes required to store the pattern
@@ -226,7 +232,7 @@ void extract_from_pattern(const char *i_filename, const char *o_filename,
 
 void options_dispatch(const options_t *options) {
   if (options->rstr != NULL) {
-    extract_from_range(options->i_filename, options->rstr, options->base);
+    extract_from_range(options->i_filename, options->o_filename, options->rstr, options->base);
   }
   if (options->pattern != NULL) {
     extract_from_pattern(options->i_filename, options->o_filename,

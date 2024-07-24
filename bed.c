@@ -157,7 +157,7 @@ void pat_to_bytes(const char *pattern, uchar *pat_bytes, int sz) {
 const char *create_ofilename(const char *filename, int suffix) {
   /* FIXME: make this non static (very dangerous currently) */
   static char of[256];
-  sprintf(of, "%s%d", filename, suffix);
+  sprintf(of, "%s-%d", filename, suffix);
   return of;
 }
 
@@ -207,20 +207,24 @@ void extract_from_pattern(const char *i_filename, const char *o_filename,
   for (int bi = 0; bi < file_size; bi++) {
     if (previous_match == true && file_arr[bi] != pat_bytes[mi]) {
       mi = 0;
+      previous_match = false;
     }
     if (file_arr[bi] == pat_bytes[mi]) {
+      printf("file off %d match start %d\n", file_off_start, match_start_bi);
       mi++;
       if (mi >= sz) {
         dump_to_file(o_filename, match_count, file_arr, file_off_start,
                      match_start_bi);
-        file_off_start = bi;
+        file_off_start = match_start_bi;
         // printf("found a match from %d to %d\n", match_start_bi, bi);
         match_count++;
         mi = 0;
       }
+      if (previous_match == false) {
+        match_start_bi = bi;
+      }
       previous_match = true;
-      match_start_bi = bi;
-    }
+    } 
   }
   dump_to_file(o_filename, match_count, file_arr, match_start_bi, file_size);
   free(file_arr);

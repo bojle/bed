@@ -23,8 +23,8 @@ typedef struct options {
   int pattern_cnt;
   int base;
   bool extract;
+  bool count;
 } options_t;
-
 
 void print_usage() {
   /* FIXME: update */
@@ -33,6 +33,8 @@ void print_usage() {
          "bed -e -p '8c 41' -i infile -o outfile\n"
          "bed -p '0a 0b 7e' -i filename -r 10-20 -o outfile\n"
          "bed -b 10 -i filename -r 10-20 -o outfile\n"
+         "count no of times 8c 7e occurs in file\n"
+         "bed -c -i filename -p \"8c 7e\"\n"
          "bed -b 16 -i filename -r ae-ffc -o outfile\n");
 }
 
@@ -55,11 +57,11 @@ void append_pattern(options_t *options, const char *pattern) {
 }
 
 void check_args(const options_t *options) {
-  if (options->extract == 0) {
-    die("Need an action flag (i.e. -e)");
+  if (options->extract == 0 && options->count == 0) {
+    die("Need an action flag (i.e. -e | -c)");
   }
   if (options->i_filename == NULL && options->o_filename == NULL) {
-    die("need both input file (-i) and output file (-o)");
+    die("need both input file (-i) or output file (-o)");
   }
   if (options->pattern == NULL && options->rstr == NULL) {
     die("need atleast one of -r or -p");
@@ -77,12 +79,17 @@ void init_options(options_t *options) {
   options->pattern_cnt = 0;
   options->base = 10;
   options->extract = 0;
+  options->count = 0;
 }
 
 void parse_args(int argc, char *argv[], options_t *options) {
   int opt;
-  while ((opt = getopt(argc, argv, "b:er:i:o:p:")) != -1) {
+  while ((opt = getopt(argc, argv, "hb:er:i:o:p:c")) != -1) {
     switch (opt) {
+      case 'h':
+        print_usage();
+        exit(EXIT_SUCCESS);
+        break;
     case 'e':
       options->extract = 1;
       break;
@@ -100,6 +107,9 @@ void parse_args(int argc, char *argv[], options_t *options) {
       break;
     case 'b':
       options->base = strtol(optarg, NULL, 10);
+      break;
+    case 'c':
+      options->count = true;
       break;
     default:
       help_and_die("unknown or no arguments");
@@ -124,7 +134,8 @@ inline void check_fp(FILE *fp, const char *msg) {
   }
 }
 
-void extract_from_range(const char *ifile, const char *ofile, const char *range, int base) {
+void extract_from_range(const char *ifile, const char *ofile, const char *range,
+                        int base) {
   range_t rg = parse_range(range, base);
   FILE *fp = fopen(ifile, "r");
   check_fp(fp, "could not open file\n");
@@ -201,7 +212,8 @@ void dump_to_file(const char *file, int suffix, const uchar *buf, int start,
   fclose(fp);
 }
 
-void prepare_pat_bytes(uchar **pat_bytes, const int *pat_bytes_sz, const char * const *pattern, int pattern_cnt) {
+void prepare_pat_bytes(uchar **pat_bytes, const int *pat_bytes_sz,
+                       const char *const *pattern, int pattern_cnt) {
   for (int i = 0; i < pattern_cnt; ++i) {
     int sz = pat_bytes_sz[i];
     pat_bytes[i] = (uchar *)malloc(sizeof(*pat_bytes[i]) * sz);
@@ -209,7 +221,8 @@ void prepare_pat_bytes(uchar **pat_bytes, const int *pat_bytes_sz, const char * 
   }
 }
 
-void prepare_pat_bytes_sz(int *pat_bytes_sz, const char * const *pattern, int pattern_cnt) {
+void prepare_pat_bytes_sz(int *pat_bytes_sz, const char *const *pattern,
+                          int pattern_cnt) {
   for (int i = 0; i < pattern_cnt; ++i) {
     pat_bytes_sz[i] = getsz_from_pat(pattern[i]);
   }
@@ -222,7 +235,7 @@ void free_pat_bytes(uchar **pat_bytes, int pattern_cnt) {
 }
 
 bool lookahead_match(const uchar *hay, int hay_ptr, int hay_size,
-                    const uchar *needle, int needle_size) {
+                     const uchar *needle, int needle_size) {
   if (hay_ptr >= hay_size) {
     return false;
   }
@@ -262,13 +275,10 @@ int vec_at(vec_t *vec, int i) {
   return vec->data[i];
 }
 
-void vec_free(vec_t *vec) {
-  free(vec->data);
-}
-
+void vec_free(vec_t *vec) { free(vec->data); }
 
 void extract_from_pattern(const char *i_filename, const char *o_filename,
-                          const char * const*pattern, int pattern_cnt) {
+                          const char *const *pattern, int pattern_cnt) {
   uchar *pat_bytes[MAX_PATTERNS];
   int pat_bytes_sz[MAX_PATTERNS];
 
@@ -282,7 +292,8 @@ void extract_from_pattern(const char *i_filename, const char *o_filename,
   uchar *file_arr = read_file(i_filename, &file_size);
   for (int i = 0; i < file_size; ++i) {
     for (int j = 0; j < pattern_cnt; ++j) {
-      if (lookahead_match(file_arr, i, file_size, pat_bytes[j], pat_bytes_sz[j])) {
+      if (lookahead_match(file_arr, i, file_size, pat_bytes[j],
+                          pat_bytes_sz[j])) {
         vec_push_back(&match_indexes, i);
         printf("found a match for pattern %d at %d sz \n", j, i);
       }
@@ -305,13 +316,43 @@ void extract_from_pattern(const char *i_filename, const char *o_filename,
   vec_free(&match_indexes);
 }
 
+void count_patterns(const char *i_filename, const char *const *pattern,
+                    int pattern_cnt) {
+  uchar *pat_bytes[MAX_PATTERNS];
+  int pat_bytes_sz[MAX_PATTERNS];
+
+  prepare_pat_bytes_sz(pat_bytes_sz, pattern, pattern_cnt);
+  prepare_pat_bytes(pat_bytes, pat_bytes_sz, pattern, pattern_cnt);
+
+  int match_cnt = 0;
+  int file_size = 0;
+  uchar *file_arr = read_file(i_filename, &file_size);
+  for (int i = 0; i < file_size; ++i) {
+    for (int j = 0; j < pattern_cnt; ++j) {
+      if (lookahead_match(file_arr, i, file_size, pat_bytes[j],
+                          pat_bytes_sz[j])) {
+        match_cnt++;
+      }
+    }
+  }
+  if (match_cnt == 0) {
+    exit(EXIT_FAILURE);
+  }
+  printf("%d\n", match_cnt);
+}
+
 void options_dispatch(const options_t *options) {
   if (options->rstr != NULL) {
-    extract_from_range(options->i_filename, options->o_filename, options->rstr, options->base);
+    extract_from_range(options->i_filename, options->o_filename, options->rstr,
+                       options->base);
   }
-  if (options->pattern != NULL) {
+  if (options->pattern != NULL && options->extract == 1) {
     extract_from_pattern(options->i_filename, options->o_filename,
                          options->pattern, options->pattern_cnt);
+  }
+
+  if (options->pattern != NULL && options->count == 1) {
+    count_patterns(options->i_filename, options->pattern, options->pattern_cnt);
   }
 }
 

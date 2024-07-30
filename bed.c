@@ -26,6 +26,33 @@ typedef struct options {
   bool count;
 } options_t;
 
+typedef struct match_t {
+  /* TODO: use this as a union of range_t maybe? */ 
+  uchar *pat_bytes[MAX_PATTERNS];
+  int pat_bytes_sz[MAX_PATTERNS];
+  /* indexes into pat_bytes that need to be treated
+   * specially (like a regex)
+   */
+  //int *char_regex;
+  int pattern_cnt;
+} match_t;
+
+void match_init(match_t *m) {
+  for (int i = 0; i < MAX_PATTERNS; ++i) {
+    m->pat_bytes[i] = NULL;
+    m->pat_bytes_sz[i] = 0;
+  }
+  //m->char_regex = NULL;
+  m->pattern_cnt = 0;
+}
+
+void match_free(match_t *m) {
+  for (int i = 0; i < m->pattern_cnt; ++i) {
+    free(m->pat_bytes[i]);
+  }
+  //free(m->char_regex);
+}
+
 void print_usage() {
   /* FIXME: update */
   printf("USAGE: \n"
@@ -171,13 +198,6 @@ int getsz_from_pat(const char *pattern) {
   return sz / 2;
 }
 
-void pat_to_bytes(const char *pattern, uchar *pat_bytes, int sz) {
-  char *stop;
-  for (int i = 0; i < sz; ++i) {
-    pat_bytes[i] = strtol(pattern, &stop, 16);
-    pattern = stop;
-  }
-}
 
 const char *create_ofilename(const char *filename, int suffix) {
   /* FIXME: make this non static (very dangerous currently) */
@@ -212,26 +232,32 @@ void dump_to_file(const char *file, int suffix, const uchar *buf, int start,
   fclose(fp);
 }
 
-void prepare_pat_bytes(uchar **pat_bytes, const int *pat_bytes_sz,
-                       const char *const *pattern, int pattern_cnt) {
-  for (int i = 0; i < pattern_cnt; ++i) {
-    int sz = pat_bytes_sz[i];
-    pat_bytes[i] = (uchar *)malloc(sizeof(*pat_bytes[i]) * sz);
-    pat_to_bytes(pattern[i], pat_bytes[i], sz);
+void pat2byte(uchar *pat_bytes, const char *pattern, int sz) {
+  char *stop;
+  for (int i = 0; i < sz; ++i) {
+    pat_bytes[i] = strtol(pattern, &stop, 16);
+    pattern = stop;
   }
 }
 
-void prepare_pat_bytes_sz(int *pat_bytes_sz, const char *const *pattern,
-                          int pattern_cnt) {
-  for (int i = 0; i < pattern_cnt; ++i) {
-    pat_bytes_sz[i] = getsz_from_pat(pattern[i]);
+void match_set_pat(match_t *m, const char *const *pattern) {
+  for (int i = 0; i < m->pattern_cnt; ++i) {
+    int sz = m->pat_bytes_sz[i];
+    m->pat_bytes[i] = (uchar *) malloc(sizeof(*(m->pat_bytes[i])) * sz);
+    pat2byte(m->pat_bytes[i], pattern[i], sz);
   }
 }
 
-void free_pat_bytes(uchar **pat_bytes, int pattern_cnt) {
-  for (int i = 0; i < pattern_cnt; ++i) {
-    free(pat_bytes[i]);
+void match_set_pat_bytes(match_t *m, const char *const *pattern) {
+  for (int i = 0; i < m->pattern_cnt; ++i) {
+    m->pat_bytes_sz[i] = getsz_from_pat(pattern[i]);
   }
+}
+
+void match_parse(match_t *m, const char *const *pattern, int pattern_cnt) {
+  m->pattern_cnt = pattern_cnt;
+  match_set_pat_bytes(m, pattern);
+  match_set_pat(m, pattern);
 }
 
 bool lookahead_match(const uchar *hay, int hay_ptr, int hay_size,
@@ -279,11 +305,9 @@ void vec_free(vec_t *vec) { free(vec->data); }
 
 void extract_from_pattern(const char *i_filename, const char *o_filename,
                           const char *const *pattern, int pattern_cnt) {
-  uchar *pat_bytes[MAX_PATTERNS];
-  int pat_bytes_sz[MAX_PATTERNS];
-
-  prepare_pat_bytes_sz(pat_bytes_sz, pattern, pattern_cnt);
-  prepare_pat_bytes(pat_bytes, pat_bytes_sz, pattern, pattern_cnt);
+  match_t match;
+  match_init(&match);
+  match_parse(&match, pattern, pattern_cnt);
 
   vec_t match_indexes;
   vec_init(&match_indexes);
@@ -291,9 +315,9 @@ void extract_from_pattern(const char *i_filename, const char *o_filename,
   int file_size = 0;
   uchar *file_arr = read_file(i_filename, &file_size);
   for (int i = 0; i < file_size; ++i) {
-    for (int j = 0; j < pattern_cnt; ++j) {
-      if (lookahead_match(file_arr, i, file_size, pat_bytes[j],
-                          pat_bytes_sz[j])) {
+    for (int j = 0; j < match.pattern_cnt; ++j) {
+      if (lookahead_match(file_arr, i, file_size, match.pat_bytes[j],
+                          match.pat_bytes_sz[j])) {
         vec_push_back(&match_indexes, i);
         printf("found a match for pattern %d at %d sz \n", j, i);
       }
@@ -312,25 +336,23 @@ void extract_from_pattern(const char *i_filename, const char *o_filename,
   dump_to_file(o_filename, i, file_arr, mindex, file_size);
 
   free(file_arr);
-  free_pat_bytes(pat_bytes, pattern_cnt);
   vec_free(&match_indexes);
+  match_free(&match);
 }
 
 void count_patterns(const char *i_filename, const char *const *pattern,
                     int pattern_cnt) {
-  uchar *pat_bytes[MAX_PATTERNS];
-  int pat_bytes_sz[MAX_PATTERNS];
-
-  prepare_pat_bytes_sz(pat_bytes_sz, pattern, pattern_cnt);
-  prepare_pat_bytes(pat_bytes, pat_bytes_sz, pattern, pattern_cnt);
+  match_t match;
+  match_init(&match);
+  match_parse(&match, pattern, pattern_cnt);
 
   int match_cnt = 0;
   int file_size = 0;
   uchar *file_arr = read_file(i_filename, &file_size);
   for (int i = 0; i < file_size; ++i) {
     for (int j = 0; j < pattern_cnt; ++j) {
-      if (lookahead_match(file_arr, i, file_size, pat_bytes[j],
-                          pat_bytes_sz[j])) {
+      if (lookahead_match(file_arr, i, file_size, match.pat_bytes[j],
+                          match.pat_bytes_sz[j])) {
         match_cnt++;
       }
     }

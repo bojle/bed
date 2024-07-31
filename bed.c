@@ -4,7 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <string.h>
 #include <unistd.h>
+#include <getopt.h>
 
 typedef unsigned char uchar;
 
@@ -14,6 +16,34 @@ typedef struct range_t {
 } range_t;
 
 #define MAX_PATTERNS 64
+#define MAX_REGEX_IN_PAT 128
+
+typedef struct vec_t {
+  int *data;
+  int size;
+  int capacity;
+} vec_t;
+
+void vec_init(vec_t *vec) {
+  vec->data = NULL;
+  vec->size = 0;
+  vec->capacity = 0;
+}
+
+void vec_push_back(vec_t *vec, int v) {
+  if (vec->size >= vec->capacity) {
+    vec->capacity = vec->capacity * 2 + 1;
+    vec->data = realloc(vec->data, sizeof(int) * vec->capacity);
+  }
+  vec->data[vec->size++] = v;
+}
+
+int vec_at(vec_t *vec, int i) {
+  assert(i < vec->size);
+  return vec->data[i];
+}
+
+void vec_free(vec_t *vec) { free(vec->data); }
 
 typedef struct options {
   const char *i_filename;
@@ -26,31 +56,32 @@ typedef struct options {
   bool count;
 } options_t;
 
+typedef struct match_char {
+  uchar *ptr;
+  bool *any;
+  int ptr_sz;
+} match_char_t;
+
 typedef struct match_t {
   /* TODO: use this as a union of range_t maybe? */ 
-  uchar *pat_bytes[MAX_PATTERNS];
-  int pat_bytes_sz[MAX_PATTERNS];
-  /* indexes into pat_bytes that need to be treated
-   * specially (like a regex)
-   */
-  //int *char_regex;
+  match_char_t pat_bytes[MAX_PATTERNS];
   int pattern_cnt;
 } match_t;
 
 void match_init(match_t *m) {
   for (int i = 0; i < MAX_PATTERNS; ++i) {
-    m->pat_bytes[i] = NULL;
-    m->pat_bytes_sz[i] = 0;
+    m->pat_bytes[i].ptr = NULL;
+    m->pat_bytes[i].any = NULL;
+    m->pat_bytes[i].ptr_sz = 0;
   }
-  //m->char_regex = NULL;
   m->pattern_cnt = 0;
 }
 
 void match_free(match_t *m) {
   for (int i = 0; i < m->pattern_cnt; ++i) {
-    free(m->pat_bytes[i]);
+    free(m->pat_bytes[i].ptr);
+    free(m->pat_bytes[i].any);
   }
-  //free(m->char_regex);
 }
 
 void print_usage() {
@@ -65,13 +96,13 @@ void print_usage() {
          "bed -b 16 -i filename -r ae-ffc -o outfile\n");
 }
 
-[[noreturn]] void help_and_die(const char *msg) {
+void help_and_die(const char *msg) {
   printf("%s\n", msg);
   print_usage();
   exit(EXIT_FAILURE);
 }
 
-[[noreturn]] void die(const char *msg) {
+void die(const char *msg) {
   printf("%s\n", msg);
   exit(EXIT_FAILURE);
 }
@@ -90,7 +121,7 @@ void check_args(const options_t *options) {
   if (options->i_filename == NULL && options->o_filename == NULL) {
     die("need both input file (-i) or output file (-o)");
   }
-  if (options->pattern == NULL && options->rstr == NULL) {
+  if (options->pattern[0] == NULL && options->rstr == NULL) {
     die("need atleast one of -r or -p");
   }
 }
@@ -155,7 +186,7 @@ range_t parse_range(const char *rstr, int base) {
   return rg;
 }
 
-inline void check_fp(FILE *fp, const char *msg) {
+void check_fp(FILE *fp, const char *msg) {
   if (fp == NULL) {
     die(msg);
   }
@@ -189,11 +220,12 @@ int getsz_from_pat(const char *pattern) {
   const char *s = pattern;
   int sz = 0;
   while (*s != '\0') {
-    if (isalnum(*s)) {
+    if (isalnum(*s) || *s == '.') {
       sz++;
     }
     s++;
   }
+  assert(sz != 0 && "sz cannot be zero");
   assert(sz % 2 == 0 && "Invalid hex pattern, specify 0a instead of a");
   return sz / 2;
 }
@@ -209,13 +241,13 @@ const char *create_ofilename(const char *filename, int suffix) {
 uchar *read_file(const char *filename, int *sz) {
   FILE *fp = fopen(filename, "r");
   if (fp == NULL) {
-    die("could not open file\n");
+    die("filename could not open file\n");
   }
   struct stat buf;
   stat(filename, &buf);
   *sz = buf.st_size;
   uchar *ret = (uchar *)malloc(*sz * sizeof(*ret));
-  if (fread(ret, sizeof(*ret), *sz, fp) != *sz) {
+  if (fread(ret, sizeof(*ret), *sz, fp) != (size_t) *sz) {
     die("cant fread");
   }
   fclose(fp);
@@ -232,28 +264,44 @@ void dump_to_file(const char *file, int suffix, const uchar *buf, int start,
   fclose(fp);
 }
 
-void pat2byte(uchar *pat_bytes, const char *pattern, int sz) {
+/* remove whitespace */
+const char *rmws(const char *ptr) {
+  while (isspace(*ptr) && *ptr != '\0') {
+    ptr++;
+  }
+  return ptr;
+}
+
+void pat2byte(match_t *m, const char *pattern, int n) {
   char *stop;
-  for (int i = 0; i < sz; ++i) {
-    pat_bytes[i] = strtol(pattern, &stop, 16);
-    pattern = stop;
+  for (int i = 0; i < m->pat_bytes[n].ptr_sz; ++i) {
+    pattern = rmws(pattern);
+    if (*pattern == '.' && *(pattern+1) == '.') {
+      /* use vec_t */
+      m->pat_bytes[n].any[i] = 1;
+      pattern += 2;
+    } else {
+      m->pat_bytes[n].ptr[i] = strtol(pattern, &stop, 16);
+      m->pat_bytes[n].any[i] = 0;
+      pattern = stop;
+    }
   }
 }
 
 void match_set_pat(match_t *m, const char *const *pattern) {
   for (int i = 0; i < m->pattern_cnt; ++i) {
-    int sz = m->pat_bytes_sz[i];
-    m->pat_bytes[i] = (uchar *) malloc(sizeof(*(m->pat_bytes[i])) * sz);
-    pat2byte(m->pat_bytes[i], pattern[i], sz);
+    int sz = m->pat_bytes[i].ptr_sz;
+    m->pat_bytes[i].ptr = (uchar *) malloc(sizeof(uchar) * sz);
+    m->pat_bytes[i].any = (bool *) malloc(sizeof(bool) * sz);
+    pat2byte(m, pattern[i], i);
   }
 }
 
 void match_set_pat_bytes(match_t *m, const char *const *pattern) {
   for (int i = 0; i < m->pattern_cnt; ++i) {
-    m->pat_bytes_sz[i] = getsz_from_pat(pattern[i]);
+    m->pat_bytes[i].ptr_sz = getsz_from_pat(pattern[i]);
   }
 }
-
 void match_parse(match_t *m, const char *const *pattern, int pattern_cnt) {
   m->pattern_cnt = pattern_cnt;
   match_set_pat_bytes(m, pattern);
@@ -261,47 +309,24 @@ void match_parse(match_t *m, const char *const *pattern, int pattern_cnt) {
 }
 
 bool lookahead_match(const uchar *hay, int hay_ptr, int hay_size,
-                     const uchar *needle, int needle_size) {
+                     const match_char_t *m) {
   if (hay_ptr >= hay_size) {
     return false;
   }
-  if (hay_ptr + needle_size >= hay_size) {
+  if (hay_ptr + m->ptr_sz >= hay_size) {
     return false;
   }
-  for (int i = 0; i < needle_size; ++i) {
-    if (needle[i] != hay[hay_ptr + i]) {
+  for (int i = 0; i < m->ptr_sz; ++i) {
+    if (m->any[i]) {
+      continue;
+    }
+    if (m->ptr[i] != hay[hay_ptr + i]) {
       return false;
     }
   }
   return true;
 }
 
-typedef struct vec_t {
-  int *data;
-  int size;
-  int capacity;
-} vec_t;
-
-void vec_init(vec_t *vec) {
-  vec->data = NULL;
-  vec->size = 0;
-  vec->capacity = 0;
-}
-
-void vec_push_back(vec_t *vec, int v) {
-  if (vec->size >= vec->capacity) {
-    vec->capacity = vec->capacity * 2 + 1;
-    vec->data = realloc(vec->data, sizeof(int) * vec->capacity);
-  }
-  vec->data[vec->size++] = v;
-}
-
-int vec_at(vec_t *vec, int i) {
-  assert(i < vec->size);
-  return vec->data[i];
-}
-
-void vec_free(vec_t *vec) { free(vec->data); }
 
 void extract_from_pattern(const char *i_filename, const char *o_filename,
                           const char *const *pattern, int pattern_cnt) {
@@ -316,8 +341,7 @@ void extract_from_pattern(const char *i_filename, const char *o_filename,
   uchar *file_arr = read_file(i_filename, &file_size);
   for (int i = 0; i < file_size; ++i) {
     for (int j = 0; j < match.pattern_cnt; ++j) {
-      if (lookahead_match(file_arr, i, file_size, match.pat_bytes[j],
-                          match.pat_bytes_sz[j])) {
+      if (lookahead_match(file_arr, i, file_size, &(match.pat_bytes[j]))) {
         vec_push_back(&match_indexes, i);
         printf("found a match for pattern %d at %d sz \n", j, i);
       }
@@ -351,8 +375,7 @@ void count_patterns(const char *i_filename, const char *const *pattern,
   uchar *file_arr = read_file(i_filename, &file_size);
   for (int i = 0; i < file_size; ++i) {
     for (int j = 0; j < pattern_cnt; ++j) {
-      if (lookahead_match(file_arr, i, file_size, match.pat_bytes[j],
-                          match.pat_bytes_sz[j])) {
+      if (lookahead_match(file_arr, i, file_size, &(match.pat_bytes[j]))) {
         match_cnt++;
       }
     }
@@ -368,12 +391,13 @@ void options_dispatch(const options_t *options) {
     extract_from_range(options->i_filename, options->o_filename, options->rstr,
                        options->base);
   }
-  if (options->pattern != NULL && options->extract == 1) {
+  if (options->pattern[0] != NULL && options->extract == 1) {
+
     extract_from_pattern(options->i_filename, options->o_filename,
                          options->pattern, options->pattern_cnt);
   }
 
-  if (options->pattern != NULL && options->count == 1) {
+  if (options->pattern[0] != NULL && options->count == 1) {
     count_patterns(options->i_filename, options->pattern, options->pattern_cnt);
   }
 }

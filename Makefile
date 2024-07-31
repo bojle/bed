@@ -1,5 +1,5 @@
 bed: bed.c
-	gcc -O3 -o bed $^
+	gcc -O3 -Wall -Wextra -pedantic -std=c99 -o bed $^
 
 install: bed
 	cp bed ${HOME}/.local/bin/

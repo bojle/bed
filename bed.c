@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -54,6 +55,7 @@ typedef struct options {
   int base;
   bool extract;
   bool count;
+  bool print;
 } options_t;
 
 typedef struct match_char {
@@ -115,13 +117,16 @@ void append_pattern(options_t *options, const char *pattern) {
 }
 
 void check_args(const options_t *options) {
-  if (options->extract == 0 && options->count == 0) {
+  if (options->extract == 0 
+      && options->count == 0
+      && options->print == 0) {
     die("Need an action flag (i.e. -e | -c)");
   }
   if (options->i_filename == NULL && options->o_filename == NULL) {
     die("need both input file (-i) or output file (-o)");
   }
-  if (options->pattern[0] == NULL && options->rstr == NULL) {
+  if (options->pattern[0] == NULL && options->rstr == NULL
+      && options->print == 0) {
     die("need atleast one of -r or -p");
   }
 }
@@ -142,7 +147,7 @@ void init_options(options_t *options) {
 
 void parse_args(int argc, char *argv[], options_t *options) {
   int opt;
-  while ((opt = getopt(argc, argv, "hb:er:i:o:p:c")) != -1) {
+  while ((opt = getopt(argc, argv, "hb:er:i:o:p:cP")) != -1) {
     switch (opt) {
       case 'h':
         print_usage();
@@ -165,6 +170,9 @@ void parse_args(int argc, char *argv[], options_t *options) {
       break;
     case 'b':
       options->base = strtol(optarg, NULL, 10);
+      break;
+    case 'P':
+      options->print = true;
       break;
     case 'c':
       options->count = true;
@@ -386,6 +394,59 @@ void count_patterns(const char *i_filename, const char *const *pattern,
   printf("%d\n", match_cnt);
 }
 
+#define BYTES_ON_A_LINE 16
+#define PRETTY_PRINT_ASCII
+
+#define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c "
+
+#define BYTE_TO_BINARY(byte)  \
+  ((byte) & 0x80 ? '1' : '0'), \
+  ((byte) & 0x40 ? '1' : '0'), \
+  ((byte) & 0x20 ? '1' : '0'), \
+  ((byte) & 0x10 ? '1' : '0'), \
+  ((byte) & 0x08 ? '1' : '0'), \
+  ((byte) & 0x04 ? '1' : '0'), \
+  ((byte) & 0x02 ? '1' : '0'), \
+  ((byte) & 0x01 ? '1' : '0')
+
+void printb(int c) {
+  printf(BYTE_TO_BINARY_PATTERN, BYTE_TO_BINARY(c));
+}
+
+void pretty_print(const char *i_filename) {
+  int file_size = 0;
+  uchar *file_arr = read_file(i_filename, &file_size);
+  int lines = ceil((float) file_size / (float) BYTES_ON_A_LINE);
+  for (int i = 0; i < lines; ++i) {
+    printf("%08x\t", i * BYTES_ON_A_LINE);
+    for (int j = 0; j < BYTES_ON_A_LINE; ++j) {
+      int index = i * BYTES_ON_A_LINE + j;
+      if (j % 8 == 0 && j != 0) {
+        printf("| ");
+      }
+      if (index >= file_size) {
+        break;
+      }
+      //printf("%02x ", file_arr[index]);
+      printb(file_arr[index]);
+    }
+#ifdef PRETTY_PRINT_ASCII
+    printf("\t");
+    printf("|");
+    for (int j = 0; j < BYTES_ON_A_LINE; ++j) {
+      int index = i * BYTES_ON_A_LINE + j;
+      if (file_arr[index] > 33 && file_arr[index] <= 126) {
+        printf("%c", file_arr[index]);
+      } else {
+        printf(".");
+      }
+    }
+    printf("|");
+#endif
+    printf("\n");
+  }
+}
+
 void options_dispatch(const options_t *options) {
   if (options->rstr != NULL) {
     extract_from_range(options->i_filename, options->o_filename, options->rstr,
@@ -399,6 +460,10 @@ void options_dispatch(const options_t *options) {
 
   if (options->pattern[0] != NULL && options->count == 1) {
     count_patterns(options->i_filename, options->pattern, options->pattern_cnt);
+  }
+
+  if (options->print == 1) {
+    pretty_print(options->i_filename);
   }
 }
 

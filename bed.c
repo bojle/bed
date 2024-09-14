@@ -56,6 +56,7 @@ typedef struct options {
   bool extract;
   bool count;
   bool print;
+  bool diff;
 } options_t;
 
 typedef struct match_char {
@@ -95,7 +96,10 @@ void print_usage() {
          "bed -b 10 -i filename -r 10-20 -o outfile\n"
          "count no of times 8c 7e occurs in file\n"
          "bed -c -i filename -p \"8c 7e\"\n"
-         "bed -b 16 -i filename -r ae-ffc -o outfile\n");
+         "bed -b 16 -i filename -r ae-ffc -o outfile\n"
+         // TODO: add a better syntax for bindiff 
+         "Diff two files (odd syntax i know)\n"
+         "bed -D -i file1 -o file2\n");
 }
 
 void help_and_die(const char *msg) {
@@ -119,15 +123,16 @@ void append_pattern(options_t *options, const char *pattern) {
 void check_args(const options_t *options) {
   if (options->extract == 0 
       && options->count == 0
-      && options->print == 0) {
-    die("Need an action flag (i.e. -e | -c)");
+      && options->print == 0
+      && options->diff == 0) {
+    die("Need an action flag (i.e. -e | -c | -p | -D)");
   }
   if (options->i_filename == NULL && options->o_filename == NULL) {
-    die("need both input file (-i) or output file (-o)");
+    die("need atleast input file or output file");
   }
   if (options->pattern[0] == NULL && options->rstr == NULL
-      && options->print == 0) {
-    die("need atleast one of -r or -p");
+      && options->print == 0 && options->diff == 0) {
+    die("need atleast one of -r or -p or -D");
   }
 }
 
@@ -143,11 +148,12 @@ void init_options(options_t *options) {
   options->base = 10;
   options->extract = 0;
   options->count = 0;
+  options->diff = 0;
 }
 
 void parse_args(int argc, char *argv[], options_t *options) {
   int opt;
-  while ((opt = getopt(argc, argv, "hb:er:i:o:p:cP")) != -1) {
+  while ((opt = getopt(argc, argv, "hb:er:i:o:p:cPD")) != -1) {
     switch (opt) {
       case 'h':
         print_usage();
@@ -176,6 +182,9 @@ void parse_args(int argc, char *argv[], options_t *options) {
       break;
     case 'c':
       options->count = true;
+      break;
+    case 'D':
+      options->diff = true;
       break;
     default:
       help_and_die("unknown or no arguments");
@@ -392,6 +401,44 @@ void count_patterns(const char *i_filename, const char *const *pattern,
     exit(EXIT_FAILURE);
   }
   printf("%d\n", match_cnt);
+  free(file_arr);
+}
+
+/* print 'vicinity' characters on either side of 'index' in 'file_arr' */
+void print_vicinity(const uchar *file_arr, int sz, int index, int vicinity) {
+  /* clamp below */
+  int low = (index - vicinity) < 0 ? 0 : (index - vicinity);
+  /* clamp above */
+  int high = (index + vicinity) >= sz ? sz : (index + vicinity);
+  for (int i = low; i < high; ++i) {
+    printf("%02x ", file_arr[i]);
+  }
+}
+
+void bindiff(const char *i_filename, const char *o_filename) {
+  assert(i_filename != NULL);
+  assert(o_filename != NULL);
+  int f1_sz = 0;
+  int f2_sz = 0;
+  uchar *f1 = read_file(i_filename, &f1_sz);
+  uchar *f2 = read_file(o_filename, &f2_sz);
+  if (f1_sz != f2_sz) {
+    printf("size do not match. f1_sz: %d, f2_sz: %d\n", f1_sz, f2_sz);
+  }
+  int min_sz = (f1_sz > f2_sz) ? f2_sz : f1_sz;
+  for (int i = 0; i < min_sz; ++i) {
+    if (f1[i] != f2[i]) {
+      printf("mismatch at index %d\n", i);
+      printf("file1: ");
+      print_vicinity(f1, f1_sz, i, 10);
+      printf("\n");
+      printf("file2: ");
+      print_vicinity(f2, f2_sz, i, 10);
+      printf("\n");
+    }
+  }
+  free(f1);
+  free(f2);
 }
 
 #define BYTES_ON_A_LINE 16
@@ -445,6 +492,7 @@ void pretty_print(const char *i_filename) {
 #endif
     printf("\n");
   }
+  free(file_arr);
 }
 
 void options_dispatch(const options_t *options) {
@@ -464,6 +512,10 @@ void options_dispatch(const options_t *options) {
 
   if (options->print == 1) {
     pretty_print(options->i_filename);
+  }
+
+  if (options->diff) {
+    bindiff(options->i_filename, options->o_filename);
   }
 }
 

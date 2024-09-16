@@ -11,6 +11,13 @@
 
 typedef unsigned char uchar;
 
+enum {
+  RED = 31,
+  GREEN = 32,
+  YELLOW = 33,
+  BLUE = 34,
+};
+
 typedef struct range_t {
   int start;
   int stop;
@@ -89,17 +96,22 @@ void match_free(match_t *m) {
 
 void print_usage() {
   /* FIXME: update */
-  printf("USAGE: \n"
-         "bed -b 10 -e -i filename -r 10-20 -o outfile\n"
-         "bed -e -p '8c 41' -i infile -o outfile\n"
-         "bed -p '0a 0b 7e' -i filename -r 10-20 -o outfile\n"
-         "bed -b 10 -i filename -r 10-20 -o outfile\n"
-         "count no of times 8c 7e occurs in file\n"
-         "bed -c -i filename -p \"8c 7e\"\n"
-         "bed -b 16 -i filename -r ae-ffc -o outfile\n"
-         // TODO: add a better syntax for bindiff 
-         "Diff two files (odd syntax i know)\n"
-         "bed -D -i file1 -o file2\n");
+  printf("USAGE: \n");
+  printf("Extract range bytes (in decimal) and write to outfile\n");
+  printf("bed -e -b 10 -i filename -r 10-20 -o outfile\n\n");
+  printf("Extract range bytes and write to outfile (any base can be specified)\n");
+  printf("bed -e -b 16 -i filename -r ae-ffc -o outfile\n\n");
+  printf("Extract bytes based on pattern and write to outfile\n");
+  printf("bed -e -p '8c 41' -i infile -o outfile\n\n");
+  printf("Specify multiple patterns to be extracted\n");
+  printf("bed -e -p '8c 41' -p '1c 1c 1c' -p '9e 72 0a' -i infile -o outfile\n\n");
+  printf("Count no of times a pattern occurs in a file\n");
+  printf("bed -c -i filename -p '8c 7e'\n\n");
+  printf("Pretty print a file\n");
+  printf("bed -P -i filename\n\n");
+  // TODO: add a better syntax for bindiff
+  printf("Diff two files (odd syntax i know)\n");
+  printf("bed -D -i file1 -o file2\n");
 }
 
 void help_and_die(const char *msg) {
@@ -405,15 +417,22 @@ void count_patterns(const char *i_filename, const char *const *pattern,
 }
 
 /* print 'vicinity' characters on either side of 'index' in 'file_arr' */
-void print_vicinity(const uchar *file_arr, int sz, int index, int vicinity) {
+void print_vicinity(const uchar *file_arr, int sz, int index, int vicinity, int color) {
   /* clamp below */
   int low = (index - vicinity) < 0 ? 0 : (index - vicinity);
   /* clamp above */
   int high = (index + vicinity) >= sz ? sz : (index + vicinity);
   for (int i = low; i < high; ++i) {
+    if (i == index) {
+      printf("\033[%dm", RED);
+    } else {
+      printf("\033[%dm", color);
+    }
     printf("%02x ", file_arr[i]);
+    printf("\033[0m");
   }
 }
+
 
 void bindiff(const char *i_filename, const char *o_filename) {
   assert(i_filename != NULL);
@@ -430,10 +449,10 @@ void bindiff(const char *i_filename, const char *o_filename) {
     if (f1[i] != f2[i]) {
       printf("mismatch at index %d\n", i);
       printf("file1: ");
-      print_vicinity(f1, f1_sz, i, 10);
+      print_vicinity(f1, f1_sz, i, 10, YELLOW);
       printf("\n");
       printf("file2: ");
-      print_vicinity(f2, f2_sz, i, 10);
+      print_vicinity(f2, f2_sz, i, 10, BLUE);
       printf("\n");
     }
   }

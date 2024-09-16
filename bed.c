@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <errno.h>
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
@@ -58,12 +59,15 @@ typedef struct options {
   const char *o_filename;
   const char *rstr;
   const char *pattern[MAX_PATTERNS];
+  /* bytes to replace a string with (used by search and replace -s) */
+  const char *replace_str;
   int pattern_cnt;
   int base;
   bool extract;
   bool count;
   bool print;
   bool diff;
+  bool snr;
 } options_t;
 
 typedef struct match_char {
@@ -111,7 +115,9 @@ void print_usage() {
   printf("bed -P -i filename\n\n");
   // TODO: add a better syntax for bindiff
   printf("Diff two files (odd syntax i know)\n");
-  printf("bed -D -i file1 -o file2\n");
+  printf("bed -D -i file1 -o file2\n\n");
+  printf("Search and Replace a pattern. -s [replacepat] -p [searchpat]\n");
+  printf("bed -s 'de de de de de' -p '08 0b' -i aa2 -o rep.vdb\n");
 }
 
 void help_and_die(const char *msg) {
@@ -136,15 +142,15 @@ void check_args(const options_t *options) {
   if (options->extract == 0 
       && options->count == 0
       && options->print == 0
-      && options->diff == 0) {
-    die("Need an action flag (i.e. -e | -c | -p | -D)");
+      && options->diff == 0
+      && options->snr == 0) {
+    die("Need an action flag (i.e. -e | -c | -p | -D | -s)");
   }
   if (options->i_filename == NULL && options->o_filename == NULL) {
     die("need atleast input file or output file");
   }
-  if (options->pattern[0] == NULL && options->rstr == NULL
-      && options->print == 0 && options->diff == 0) {
-    die("need atleast one of -r or -p or -D");
+  if (options->pattern[0] == NULL && options->rstr == NULL) {
+    die("need atleast one of -r or -p");
   }
 }
 
@@ -158,14 +164,16 @@ void init_options(options_t *options) {
   }
   options->pattern_cnt = 0;
   options->base = 10;
+  options->print = 0;
   options->extract = 0;
   options->count = 0;
   options->diff = 0;
+  options->snr = 0;
 }
 
 void parse_args(int argc, char *argv[], options_t *options) {
   int opt;
-  while ((opt = getopt(argc, argv, "hb:er:i:o:p:cPD")) != -1) {
+  while ((opt = getopt(argc, argv, "hb:er:i:o:p:cPDs:")) != -1) {
     switch (opt) {
       case 'h':
         print_usage();
@@ -197,6 +205,10 @@ void parse_args(int argc, char *argv[], options_t *options) {
       break;
     case 'D':
       options->diff = true;
+      break;
+    case 's':
+      options->snr = true;
+      options->replace_str = optarg;
       break;
     default:
       help_and_die("unknown or no arguments");
@@ -332,9 +344,20 @@ void match_set_pat_bytes(match_t *m, const char *const *pattern) {
   }
 }
 void match_parse(match_t *m, const char *const *pattern, int pattern_cnt) {
+  match_init(m);
   m->pattern_cnt = pattern_cnt;
   match_set_pat_bytes(m, pattern);
   match_set_pat(m, pattern);
+}
+
+void match_print(const match_t *m) {
+  for (int i = 0; i < m->pattern_cnt; ++i) {
+    const match_char_t *mm = &(m->pat_bytes[i]);
+    for (int j = 0; j < mm->ptr_sz; ++j) {
+      printf("%02x ", mm->ptr[j]);
+    }
+    printf("\n");
+  }
 }
 
 bool lookahead_match(const uchar *hay, int hay_ptr, int hay_size,
@@ -360,7 +383,6 @@ bool lookahead_match(const uchar *hay, int hay_ptr, int hay_size,
 void extract_from_pattern(const char *i_filename, const char *o_filename,
                           const char *const *pattern, int pattern_cnt) {
   match_t match;
-  match_init(&match);
   match_parse(&match, pattern, pattern_cnt);
 
   vec_t match_indexes;
@@ -396,7 +418,6 @@ void extract_from_pattern(const char *i_filename, const char *o_filename,
 void count_patterns(const char *i_filename, const char *const *pattern,
                     int pattern_cnt) {
   match_t match;
-  match_init(&match);
   match_parse(&match, pattern, pattern_cnt);
 
   int match_cnt = 0;
@@ -514,6 +535,43 @@ void pretty_print(const char *i_filename) {
   free(file_arr);
 }
 
+void push_rep(FILE *fp, const match_char_t *rep) {
+  for (int i = 0; i < rep->ptr_sz; ++i) {
+    fwrite(&(rep->ptr[i]), sizeof(uchar), 1, fp);
+  }
+}
+
+void snr_pattern(const char *i_filename, const char *o_filename, const match_t *pats, const char *rep_str) {
+  FILE *ofp = fopen(o_filename, "wb");
+  if (!ofp) { die(strerror(errno)); }
+  int ifarr_sz = 0;
+  uchar *ifarr = read_file(i_filename, &ifarr_sz);
+  match_t rep;
+  match_parse(&rep, &rep_str, 1);
+  for (int i = 0; i < ifarr_sz; ++i) {
+    for (int j = 0; j < pats->pattern_cnt; ++j) {
+      if (lookahead_match(ifarr, i, ifarr_sz, &(pats->pat_bytes[j]))) {
+        push_rep(ofp, &(rep.pat_bytes[0]));
+        i += pats->pat_bytes[j].ptr_sz;
+        break;
+      }
+    }
+    fwrite(&(ifarr[i]), sizeof(uchar), 1, ofp);
+  }
+  free(ifarr);
+  fclose(ofp);
+}
+
+void snr(const options_t *options) {
+  assert(options->i_filename != NULL);
+  assert(options->o_filename != NULL);
+  assert(options->replace_str != NULL);
+  match_t pats;
+  match_parse(&pats, options->pattern, options->pattern_cnt);
+  snr_pattern(options->i_filename, options->o_filename, &pats, options->replace_str);
+  /* TODO: consider adding snr_range? */
+}
+
 void options_dispatch(const options_t *options) {
   if (options->rstr != NULL) {
     extract_from_range(options->i_filename, options->o_filename, options->rstr,
@@ -535,6 +593,10 @@ void options_dispatch(const options_t *options) {
 
   if (options->diff) {
     bindiff(options->i_filename, options->o_filename);
+  }
+
+  if (options->snr) {
+    snr(options);
   }
 }
 

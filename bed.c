@@ -238,8 +238,13 @@ void extract_from_range(const char *ifile, const char *ofile, const char *range,
   range_t rg = parse_range(range, base);
   FILE *fp = fopen(ifile, "r");
   check_fp(fp, "could not open file\n");
-  FILE *ofp = fopen(ofile, "w");
-  check_fp(ofp, "could not open file\n");
+  FILE *ofp = NULL;
+  if (strcmp(ofile, "-") == 0) {
+    ofp = stdout;
+  } else {
+    ofp = fopen(ofile, "w");
+    check_fp(ofp, "could not open file\n");
+  }
   /* byte index */
   int bi = 0;
   int c;
@@ -273,8 +278,10 @@ int getsz_from_pat(const char *pattern) {
 
 
 const char *create_ofilename(const char *filename, int suffix) {
-  /* FIXME: make this non static (very dangerous currently) */
-  static char of[256];
+  /* FIXME: make this non static, remove sprintf (very dangerous currently) */
+#define OFSZ 256
+  static char of[OFSZ];
+  memset(of, '\0', OFSZ);
   sprintf(of, "%s-%d", filename, suffix);
   return of;
 }
@@ -297,8 +304,16 @@ uchar *read_file(const char *filename, int *sz) {
 
 void dump_to_file(const char *file, int suffix, const uchar *buf, int start,
                   int stop) {
-  const char *suffxed_name = create_ofilename(file, suffix);
-  FILE *fp = fopen(suffxed_name, "w");
+  assert(file != NULL);
+  FILE *fp = NULL;
+  /* TODO: this is being repeated in extract_from_range() */
+  if (strcmp(file, "-") == 0) {
+    fp = stdout;
+    fprintf(fp, "writing to stdout\n");
+  } else {
+    const char *suffxed_name = create_ofilename(file, suffix);
+    fp = fopen(suffxed_name, "w");
+  }
   for (int i = start; i < stop; ++i) {
     fputc(buf[i], fp);
   }

@@ -12,6 +12,8 @@
 
 typedef unsigned char uchar;
 
+#define DISABLE_COLORS 
+
 enum {
   RED = 31,
   GREEN = 32,
@@ -458,13 +460,17 @@ void print_vicinity(const uchar *file_arr, int sz, int index, int vicinity, int 
   /* clamp above */
   int high = (index + vicinity) >= sz ? sz : (index + vicinity);
   for (int i = low; i < high; ++i) {
+#ifndef DISABLE_COLORS
     if (i == index) {
       printf("\033[%dm", RED);
     } else {
       printf("\033[%dm", color);
     }
-    printf("%02x ", file_arr[i]);
+#endif
+    printf("0x%02x ", file_arr[i]);
+#ifndef DISABLE_COLORS
     printf("\033[0m");
+#endif
   }
 }
 

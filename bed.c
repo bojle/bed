@@ -113,6 +113,8 @@ void print_usage() {
   printf("bed -c -i filename -p '8c 7e'\n\n");
   printf("Pretty print a file\n");
   printf("bed -P -i filename\n\n");
+  printf("Pretty print a raw from stdin\n");
+  printf("bed -P -i -\n\n");
   // TODO: add a better syntax for bindiff
   printf("Diff two files (odd syntax i know)\n");
   printf("bed -D -i file1 -o file2\n\n");
@@ -148,9 +150,6 @@ void check_args(const options_t *options) {
   }
   if (options->i_filename == NULL && options->o_filename == NULL) {
     die("need atleast input file or output file");
-  }
-  if (options->pattern[0] == NULL && options->rstr == NULL) {
-    die("need atleast one of -r or -p");
   }
 }
 
@@ -515,7 +514,7 @@ void printb(int c) {
   printf(BYTE_TO_BINARY_PATTERN, BYTE_TO_BINARY(c));
 }
 
-void pretty_print(const char *i_filename) {
+void pretty_print_aux(const char *i_filename) {
   int file_size = 0;
   uchar *file_arr = read_file(i_filename, &file_size);
   int lines = ceil((float) file_size / (float) BYTES_ON_A_LINE);
@@ -548,6 +547,23 @@ void pretty_print(const char *i_filename) {
     printf("\n");
   }
   free(file_arr);
+}
+
+/* prints plain bytes from stdin */
+void pretty_print_raw() {
+  int c = 0;
+  while ((c = getc(stdin)) != EOF) {
+    printf("%02x ", c);
+  }
+}
+
+void pretty_print(const options_t *options) {
+  assert(options->i_filename != NULL && "input file not provided: use option -i");
+  if (strcmp(options->i_filename, "-") == 0) {
+    pretty_print_raw();
+  } else {
+    pretty_print_aux(options->i_filename);
+  }
 }
 
 void push_rep(FILE *fp, const match_char_t *rep) {
@@ -603,7 +619,7 @@ void options_dispatch(const options_t *options) {
   }
 
   if (options->print == 1) {
-    pretty_print(options->i_filename);
+    pretty_print(options);
   }
 
   if (options->diff) {

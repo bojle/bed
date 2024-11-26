@@ -70,6 +70,7 @@ typedef struct options {
   bool print;
   bool diff;
   bool snr;
+  bool infuse;
 } options_t;
 
 typedef struct match_char {
@@ -147,8 +148,9 @@ void check_args(const options_t *options) {
       && options->count == 0
       && options->print == 0
       && options->diff == 0
-      && options->snr == 0) {
-    die("Need an action flag (i.e. -e | -c | -p | -D | -s)");
+      && options->snr == 0
+      && options->infuse == 0) {
+    die("Need an action flag (i.e. -e | -c | -p | -D | -s | -I)");
   }
   if (options->i_filename == NULL && options->o_filename == NULL) {
     die("need atleast input file or output file");
@@ -170,11 +172,12 @@ void init_options(options_t *options) {
   options->count = 0;
   options->diff = 0;
   options->snr = 0;
+  options->infuse = 0;
 }
 
 void parse_args(int argc, char *argv[], options_t *options) {
   int opt;
-  while ((opt = getopt(argc, argv, "hb:er:i:o:p:cPDs:")) != -1) {
+  while ((opt = getopt(argc, argv, "hb:er:i:o:p:cPDs:I")) != -1) {
     switch (opt) {
       case 'h':
         print_usage();
@@ -210,6 +213,9 @@ void parse_args(int argc, char *argv[], options_t *options) {
     case 's':
       options->snr = true;
       options->replace_str = optarg;
+      break;
+    case 'I':
+      options->infuse = true;
       break;
     default:
       help_and_die("unknown or no arguments");
@@ -442,6 +448,11 @@ void count_patterns(const char *i_filename, const char *const *pattern,
   for (int i = 0; i < file_size; ++i) {
     for (int j = 0; j < pattern_cnt; ++j) {
       if (lookahead_match(file_arr, i, file_size, &(match.pat_bytes[j]))) {
+        printf("%d: ", i);
+        for (int k = 0; k < match.pat_bytes[j].ptr_sz; ++k) {
+          printf("%02x ", match.pat_bytes[j].ptr[k]);
+        }
+        printf("\n");
         match_cnt++;
       }
     }
@@ -449,12 +460,16 @@ void count_patterns(const char *i_filename, const char *const *pattern,
   if (match_cnt == 0) {
     exit(EXIT_FAILURE);
   }
-  printf("%d\n", match_cnt);
+  printf("Count: %d\n", match_cnt);
   free(file_arr);
 }
 
 /* print 'vicinity' characters on either side of 'index' in 'file_arr' */
-void print_vicinity(const uchar *file_arr, int sz, int index, int vicinity, int color) {
+void print_vicinity(const uchar *file_arr, int sz, int index, int vicinity
+#ifndef DISABLE_COLORS
+    , int color
+#endif
+    ) {
   /* clamp below */
   int low = (index - vicinity) < 0 ? 0 : (index - vicinity);
   /* clamp above */
@@ -467,7 +482,11 @@ void print_vicinity(const uchar *file_arr, int sz, int index, int vicinity, int 
       printf("\033[%dm", color);
     }
 #endif
-    printf("0x%02x ", file_arr[i]);
+    if (i == index) {
+      printf("| 0x%02x %02x | ", file_arr[i], file_arr[i]);
+    } else {
+      printf("0x%02x ", file_arr[i]);
+    }
 #ifndef DISABLE_COLORS
     printf("\033[0m");
 #endif
@@ -490,10 +509,18 @@ void bindiff(const char *i_filename, const char *o_filename) {
     if (f1[i] != f2[i]) {
       printf("mismatch at index %d\n", i);
       printf("file1: ");
-      print_vicinity(f1, f1_sz, i, 10, YELLOW);
+      print_vicinity(f1, f1_sz, i, 10
+#ifndef DISABLE_COLORS
+          , YELLOW
+#endif
+          );
       printf("\n");
       printf("file2: ");
-      print_vicinity(f2, f2_sz, i, 10, BLUE);
+      print_vicinity(f2, f2_sz, i, 10
+#ifndef DISABLE_COLORS
+          , BLUE
+#endif
+          );
       printf("\n");
     }
   }
@@ -609,6 +636,29 @@ void snr(const options_t *options) {
   /* TODO: consider adding snr_range? */
 }
 
+/* infuse: copy differentiating bytes from one file to another 
+ * and write to stdout
+ */
+void infuse(const char *infusee_file, const char *infuser_file) {
+  assert(infusee_file != NULL);
+  assert(infuser_file != NULL);
+
+  int infusee_sz = 0;
+  uchar *infusee_arr = read_file(infusee_file, &infusee_sz);
+  int infuser_sz = 0;
+  uchar *infuser_arr = read_file(infuser_file, &infuser_sz);
+  if (infusee_sz != infuser_sz) {
+    return;
+  }
+  for (int i = 0; i < infusee_sz; ++i) {
+    if (infusee_arr[i] != infuser_arr[i]) {
+      fprintf(stdout, "%c", infuser_arr[i]); 
+    } else {
+      fprintf(stdout, "%c", infusee_arr[i]); 
+    }
+  }
+}
+
 void options_dispatch(const options_t *options) {
   if (options->rstr != NULL) {
     extract_from_range(options->i_filename, options->o_filename, options->rstr,
@@ -634,6 +684,10 @@ void options_dispatch(const options_t *options) {
 
   if (options->snr) {
     snr(options);
+  }
+
+  if (options->infuse) {
+    infuse(options->i_filename, options->o_filename);
   }
 }
 
